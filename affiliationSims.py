@@ -13,7 +13,7 @@ from sklearn import metrics
 import Embed
 from sklearn.grid_search import IterGrid
 from sklearn.cluster import KMeans
-import pickle
+import cPickle as pickle
 import dpplot
 import adjacency
 import hungarian
@@ -327,11 +327,13 @@ def embedding_vs_dimension_performance():
     return all_params
     
 
-def k_estimation_monte_carlo(rgg_list, nmc,altdim):
+def k_estimation_monte_carlo(rgg_list, nmc,altdim, fn = None):
     results = []
     results_over = []
     
     for rgg in rgg_list:
+        print 'n='+repr(np.sum(rgg.nvec))
+        
         k = len(rgg.nvec)
         dim = np.linalg.matrix_rank(rgg.block_prob)
         embed = Embed.Embed(dim, Embed.adjacency_matrix)
@@ -349,7 +351,10 @@ def k_estimation_monte_carlo(rgg_list, nmc,altdim):
         res_dict.update({'xi':xi,'xi_lb':lb, 'xi_ub':ub})
         results_over.append(res_dict)
         
-    plot_k_estimation_results(results, results_over)
+        if fn is not None:
+            pickle.dump((results,results_over), open(fn,'w'))
+        
+    # plot_k_estimation_results(results, results_over)
     return results, results_over
     
 def k_estimation_adj_monte_carlo(nnode, G, nmc,altdim):
@@ -361,25 +366,40 @@ def k_estimation_adj_monte_carlo(nnode, G, nmc,altdim):
     
     for n in nnode:
         G.n_nodes = n
-        dim = np.linalg.matrix_rank(G.P)
+        dim = np.max([np.linalg.matrix_rank(G.P),altdim])
         embed = Embed.Embed(dim, adjacency.Graph.get_adjacency)
-        xi,lb,ub = zip(*[get_xi_bnd_adj(Gmc, embed,k) for Gmc in G.iter_mc(nmc,size_condition=True)])
+        xi,lb,ub,xia,lba, uba = zip(*[get_xi_bnd_adj(Gmc, embed,k)+get_xi_bnd_adj(Gmc, embed,k,altdim)
+                         for Gmc in G.iter_mc(nmc,size_condition=True)])
         res_dict = {'nnodes':n, 'xi':xi,'xi_lb':lb, 'xi_ub':ub}
         results.append(res_dict)
-        
-        # Now try it for alternate dimension
-        dim = altdim 
-        embed.dim = altdim
-        xi,lb,ub = zip(*[get_xi_bnd_adj(Gmc, embed,k) for Gmc in G.iter_mc(nmc,size_condition=True)])
-        res_dict = {'nnodes':n, 'xi':xi,'xi_lb':lb, 'xi_ub':ub}
+        res_dict = {'nnodes':n, 'xi':xia,'xi_lb':lba, 'xi_ub':uba}
         results_over.append(res_dict)
         
-    plot_k_estimation_results(results, results_over)
+        # Now try it for alternate dimension
+        #dim = altdim 
+        #embed.dim = altdim
+        #xi,lb,ub = zip(*[get_xi_bnd_adj(Gmc, embed,k) for Gmc in G.iter_mc(nmc,size_condition=True)])
+        
+    #plot_k_estimation_results(results, results_over)
     return results, results_over
 
-def get_xi_bnd_adj(G, embed,k):
+def paper_param_adj():
+    block_prob = np.array([[.5, .1, .1],
+                           [.1, .5, .1],
+                           [.1, .1, .5]])
+    rho = np.array([.3, .3, .4])
+    
+    G = adjacency.SBMGraph(100, block_prob, rho, directed=False, loopy=False)
+    G.dense = True
+    
+    nrange = np.array([100.,   200.,   400.,   800.,  1600.,  3200.,  6400.,  12800.])
+    
+    return G, nrange
+    
+
+def get_xi_bnd_adj(G, embed,k, d=None):
     embed.embed(G,fast=False)
-    x = embed.get_scaled()
+    x = embed.get_scaled(d)
     k_means = KMeans(init='k-means++', k=k+1, n_init=10)
     lb = np.log(k_means.fit(x).inertia_)/(2*np.log(G.n_nodes))
     k_means = KMeans(init='k-means++', k=k, n_init=10)
@@ -391,34 +411,65 @@ def get_xi_bnd_adj(G, embed,k):
 
 def plot_k_estimation_results(results, results_over):
     line = cycle( ["--","-",":"])
+    marker = cycle(['^', 's','v'])
+    offset = cycle([.95,1,1.05])
+    props = dict(boxstyle='round', facecolor='gray', alpha=0.5) #
+    
     mean_xi = [np.mean(r['xi']) for r in results]
     mean_xi_ub = [np.mean(r['xi_ub']) for r in results]
     mean_xi_lb = [np.mean(r['xi_lb']) for r in results]
+    
+    std_xi = [np.std(r['xi']) for r in results]
+    std_xi_ub = [np.std(r['xi_ub']) for r in results]
+    std_xi_lb = [np.std(r['xi_lb']) for r in results]
+    
     if 'nvec' in results[0].keys():
-        n = [np.sum(r['nvec']) for r in results]
+        n = np.array([np.sum(r['nvec']) for r in results])
     else:
-        n = [r['nnodes'] for r in results]
+        n = np.array([r['nnodes'] for r in results])
     
     plot.subplot(1,2,1)
 
-    [plot.plot(n,mx,color='k',linestyle=line.next(),marker='s',markersize=10) 
-          for mx in [mean_xi_ub, mean_xi, mean_xi_lb]];
-    plot.xlabel(r'$n$ - Number of vertices')
-    plot.ylabel(r"$\log(\|\mathcal{C}_{K'}-X\|_F)/log(n)$ - Normalized Square Error")
+    #[plot.semilogx(n,mx,color='k',linestyle=line.next(),marker=marker.next(),markersize=10) 
+    #      for mx in [mean_xi_ub, mean_xi, mean_xi_lb]];
+    [plot.errorbar(n*offset.next(),mx,yerr = sx,color='k',linestyle=line.next(),marker=marker.next(),markersize=10)
+        for mx,sx in zip([mean_xi_ub, mean_xi, mean_xi_lb],[std_xi_ub, std_xi, std_xi_lb])];
+    
+    plot.xscale('log')
+    plot.xlabel(r'$n=$ number of vertices')
+    plot.xticks(n,n,rotation=45)
+    plot.xlim([np.min(n)/1.3,np.max(n)*1.3])
+    plot.ylabel(r"$\log_n(\|\mathcal{C}_{K'}-X\|_F)$")
+    plot.text(n[-3], np.mean(plot.ylim()), r'$R=\mathrm{rank}(M)$', bbox = props )
+    
+    plot.plot(plot.xlim(),[3.0/8.0,3.0/8.0],color='k',linewidth=1,linestyle='--')
     #plot.title(r'$R=\mathrm{rank}(M)$')
     
     mean_xi = [np.mean(r['xi']) for r in results_over]
     mean_xi_ub = [np.mean(r['xi_ub']) for r in results_over]
     mean_xi_lb = [np.mean(r['xi_lb']) for r in results_over]
     
+    std_xi = [np.std(r['xi']) for r in results_over]
+    std_xi_ub = [np.std(r['xi_ub']) for r in results_over]
+    std_xi_lb = [np.std(r['xi_lb']) for r in results_over]
+    
     plot.subplot(1,2,2)
-    [plot.plot(n,mx,color='k',linestyle=line.next(),marker='s',markersize=10) 
-          for mx in [mean_xi_ub, mean_xi, mean_xi_lb]];
-    plot.xlabel(r'$n$ - Number of vertices')
-    plot.ylabel(r"$\log(\|\mathcal{C}_{K'}-X\|_F)/log(n)$ - Normalized Square Error")
+    #[plot.semilogx(n,mx,color='k',linestyle=line.next(),marker=marker.next(),markersize=10) 
+    #      for mx in [mean_xi_ub, mean_xi, mean_xi_lb]];
+    [plot.errorbar(n*offset.next(),mx,yerr = sx,color='k',linestyle=line.next(),marker=marker.next(),markersize=10)
+        for mx,sx in zip([mean_xi_ub, mean_xi, mean_xi_lb],[std_xi_ub, std_xi, std_xi_lb])];
+    plot.xscale('log')
+    plot.xlabel(r'$n=$ number of vertices')
+    plot.xticks(n,n,rotation=45)
+    plot.xlim([np.min(n)/1.3,np.max(n)*1.3])
+    plot.ylabel(r"$\log_n(\|\mathcal{C}_{K'}-X\|_F)$")
+    
+    plot.text(n[-3], np.mean(plot.ylim()), r'$R=2\mathrm{rank}(M)$', bbox = props )
+    
     plot.legend([r"$K'=K-1$",r"$K'=K$",r"$K'=K+1$"],loc='best')
     
-    plot.title(r'$R=2\mathrm{rank}(M)$')
+    plot.plot(plot.xlim(),[3.0/8.0,3.0/8.0],color='k',linewidth=1,linestyle = '--')
+    #plot.title(r'$R=2\mathrm{rank}(M)$')
     
 #
 #def plot_k_estimation_results(results, results_over):
@@ -547,13 +598,29 @@ def doniell_param():
     
     return (block_prob,rho)
 
+def paper_param():
+    block_prob = np.array([[.5, .1 ,.1],
+                           [.1, .5, .10],
+                           [.10, .1, .5]])
+    
+    #2*np.array([[.205, .045 ,.15],
+    #                       [.045, .205, .15],
+    #                       [.150, .150, .18]])
+    rho = np.array([.3,.3,.4])
+    nrange = np.array([100.,   200.,   400.,   800.,  1600.,  3200.,  6400.])
+        #np.array([ 100.,   200.,   400.,   800.,  1600.,  3000, 5000, 7000, 9000, 11000])
+    
+    rgg_list = [rg.SBMGenerator(block_prob,np.array(rho*n).astype(int)) for n in nrange]
+    
+    return rgg_list #(block_prob, rho, nrange)
+
 if __name__ == '__main__':
 #    block_prob = np.random.rand(5,5)
 #    block_prob = np.triu(block_prob)+np.transpose(np.triu(block_prob,1))
 #    block_prob = np.array([[ 0.5  ,  0.2  ,  0.15 ,  0.15 ],
 #                           [ 0.2  ,  0.5  ,  0.15 ,  0.15 ],
 #                           [ 0.15 ,  0.15 ,  0.475,  0.225],
-#                           [ 0.15 ,  0.15 ,  0.225,  0.475]])
+#                           [ 0.15 , 0.15 , 0.225, 0.475]])
 #        
 #    matrices = {'Adjacency':Embed.adjacency_matrix, 'Laplacian':Embed.laplacian_matrix}
 #
@@ -573,6 +640,6 @@ if __name__ == '__main__':
     amc.nmc = 500
     amc.run_monte_carlo(init=True) 
     
-    rgg_list = rgg_list = [rg.SBMGenerator(block_prob,np.array(rho*n).astype(int)) for n in np.arange(500,1100,100)]
+    rgg_list = [rg.SBMGenerator(block_prob,np.array(rho*n).astype(int)) for n in np.arange(500,1100,100)]
     kEst,kEstAltDim = k_estimation_monte_carlo(rgg_list,1,10)
     plot_k_estimation_results(kEst,kEstAltDim)
